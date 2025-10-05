@@ -50,3 +50,17 @@ def extract_text_from_html(html: str) -> str:
     for s in soup(["scipt", "style", "head", "noscript"]):
         s.extract()
     return soup.get_text(separator="\n")
+
+def find_codes_in_text(text: str) -> List[str]:
+    found = set()
+    # Normalize: uppercase, replace unicode dashes with '-'
+    norm = text.upper().replace('\u2013', '-').replace('\u2014', '-')
+    for pat in CODE_PATTERNS:
+        for m in pat.findall(norm):
+            token = re.sub(r'[\s]+', '-', m.strip())  # unify spacing to hyphen
+            # Basic filtering: require at least one letter/digit and some dashes or length
+            if len(token) >= 8:
+                # remove punctuation at ends
+                token = token.strip('-.,;:')
+                found.add(token)
+    return sorted(found)
