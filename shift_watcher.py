@@ -64,3 +64,34 @@ def find_codes_in_text(text: str) -> List[str]:
                 token = token.strip('-.,;:')
                 found.add(token)
     return sorted(found)
+
+# -----------------------
+# DB (SQLite) to store seen codes
+# -----------------------
+def init_db(db_path="shift_codes.db"):
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS codes (
+        id INTEGER PRIMARY KEY,
+        code TEXT UNIQUE,
+        source TEXT,
+        discovered_at INTEGER
+    )
+    """)
+    conn.commit()
+    return conn
+
+def store_new_codes(conn, codes_with_sources):
+    c = conn.cursor()
+    new = []
+    now = int(time.time())
+    for code, source in codes_with_sources:
+        try:
+            c.execute("INSERT INTO codes (code, source, discovered_at) VALUES (?, ?, ?)", (code, source, now))
+            new.append((code, source))
+        except sqlite3.IntegrityError:
+            # already exists
+            pass
+    conn.commit()
+    return new
