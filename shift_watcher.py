@@ -95,3 +95,141 @@ def store_new_codes(conn, codes_with_sources):
             pass
     conn.commit()
     return new
+
+# -----------------------
+# Notification (Webhook / Email)
+# -----------------------
+def notify_via_webhook(webhook_url: str, new_codes):
+    if not webhook_url or not new_codes:
+        return
+    # Example: Discord webhook JSON payload
+    # For Slack, simpler JSON might work; both accept POST with JSON
+    content = "New SHIFT / Golden Key codes found:\n" + "\n".join([f"{c} — {s}" for c,s in new_codes])
+    payload = {"content": content}
+    resp = requests.post(webhook_url, json=payload, headers=HEADERS, timeout=15)
+    resp.raise_for_status()
+    return resp.status_code
+
+def notify_via_email(smtp_cfg, new_codes):
+    if not smtp_cfg or not new_codes:
+        return
+    msg = EmailMessage()
+    msg["Subject"] = f"[ShiftWatcher] {len(new_codes)} new SHIFT codes"
+    msg["From"] = smtp_cfg["from"]
+    msg["To"] = ", ".join(smtp_cfg["to"])
+    body = "New SHIFT / Golden Key codes discovered:\n\n" + "\n".join([f"{c} — {s}" for c,s in new_codes])
+    msg.set_content(body)
+    # connect and send
+    with smtplib.SMTP(smtp_cfg["host"], smtp_cfg.get("port", 587), timeout=30) as s:
+        if smtp_cfg.get("starttls", True):
+            s.starttls()
+        if smtp_cfg.get("username"):
+            s.login(smtp_cfg["username"], smtp_cfg["password"])
+        s.send_message(msg)
+    return True
+
+# -----------------------
+# Main scanning logic
+# -----------------------
+def scan_sources(sources):
+    results = []
+    for src in sources:
+        url = src.get("url")
+        typ = src.get("type", "html")
+        try:
+            text = fetch_url(url)
+            if typ == "html":
+                text = extract_text_from_html(text)
+            # allow optional trimming or pre-processing if provided
+            codes = find_codes_in_text(text)
+            for code in codes:
+                results.append((code, url))
+        except Exception as e:
+            print(f"Error fetching {url}: {e}")
+    return results
+
+# -----------------------
+# CLI / YAML config
+# -----------------------
+DEFAULT_CONFIG = {
+    "db_path": "shift_codes.db",
+    "sources": [
+        # Example sources — replace/extend to taste
+        {"url": "https://www.reddit.com/r/Borderlands/search?q=shift&restrict_sr=1", "type": "html"},
+        {"url": "https://borderlands.com/news/", "type": "html"},
+        {"url": "https://www.reddit.com/r/Borderlands/new/", "type": "html"},
+        {"url": "https://www.ign.com/wikis/borderlands-4/Borderlands_4_SHiFT_Codes", "type": "html"},
+        {"url": "https://www.reddit.com/r/Borderlands/comments/1nxh9lr/new_shift_codes_for_golden_keys_in_bl4/", "type": "html"},
+        # You can add Gearbox forums, official twitter/X pages, third-party sites, etc.
+    ],
+    "notify": {
+        "webhook": "",  # e.g. Discord webhook URL
+        "email": {      # optional SMTP config
+            "host": "",
+            "port": 587,
+            "starttls": True,
+            "from": "",
+            "to": [""],
+            "username": "",
+            "password": ""
+        }
+    }
+}
+
+def load_config(path):
+    """
+    Load configuration from a YAML file and merge it with the default configuration.
+
+    Args:
+        path (str): Path to the YAML configuration file.
+
+    Returns:
+        dict: Merged configuration dictionary.
+    """
+    with open(path, "r") as f:
+        cfg = yaml.safe_load(f)
+    # merge defaults
+    conf = DEFAULT_CONFIG.copy()
+    conf.update(cfg or {})
+    return conf
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", "-c", default="config.yaml")
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
+    conn = init_db(cfg.get("db_path", "shift_codes.db"))
+
+    print("Scanning sources...")
+    found = scan_sources(cfg["sources"])
+    # deduplicate by code (take first source)
+    by_code = {}
+    for code, src in found:
+        if code not in by_code:
+            by_code[code] = src
+    pairs = sorted([(c, by_code[c]) for c in by_code])
+
+    new = store_new_codes(conn, pairs)
+    if new:
+        print(f"Found {len(new)} new code(s). Notifying...")
+        # send notifications
+        webhook = cfg.get("notify", {}).get("webhook")
+        try:
+            if webhook:
+                notify_via_webhook(webhook, new)
+        except Exception as e:
+            print("Webhook notify failed:", e)
+
+        smtp_cfg = cfg.get("notify", {}).get("email")
+        try:
+            if smtp_cfg and smtp_cfg.get("host"):
+                notify_via_email(smtp_cfg, new)
+        except Exception as e:
+            print("Email notify failed:", e)
+
+    else:
+        print("No new codes found.")
+
+if __name__ == "__main__":
+    main()
